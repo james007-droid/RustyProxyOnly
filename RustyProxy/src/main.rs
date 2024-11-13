@@ -4,24 +4,26 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, thread};
+use threadpool::ThreadPool;
+
+const MAX_THREADS: usize = 8;
 
 fn main() {
-    // Iniciando o proxy
     let listener = TcpListener::bind(format!("0.0.0.0:{}", get_port())).expect("Erro ao iniciar o listener");
     println!("Proxy iniciado na porta {}", get_port());
     start_http(listener);
 }
 
 fn start_http(listener: TcpListener) {
+    let pool = ThreadPool::new(MAX_THREADS);
+
     for stream in listener.incoming() {
         match stream {
             Ok(client_stream) => {
-                // Uso de Arc e Mutex para compartilhamento seguro entre threads
                 let client_stream = Arc::new(Mutex::new(client_stream));
-                thread::spawn({
-                    let client_stream = Arc::clone(&client_stream);
-                    move || handle_client(client_stream)
-                });
+                let client_stream_clone = Arc::clone(&client_stream);
+                
+                pool.execute(move || handle_client(client_stream_clone));
             }
             Err(e) => {
                 eprintln!("Erro ao aceitar conexão: {}", e);
@@ -32,12 +34,11 @@ fn start_http(listener: TcpListener) {
 
 fn handle_client(client_stream: Arc<Mutex<TcpStream>>) {
     let status = get_status();
-    
-    // Configuração de timeout para o stream do cliente
+
     if let Ok(mut client) = client_stream.lock() {
-        client.set_read_timeout(Some(Duration::from_secs(5))).ok();
-        client.set_write_timeout(Some(Duration::from_secs(5))).ok();
-    
+        client.set_read_timeout(Some(Duration::from_secs(2))).ok();
+        client.set_write_timeout(Some(Duration::from_secs(2))).ok();
+
         if client.write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes()).is_err() {
             return;
         }
@@ -78,48 +79,44 @@ fn handle_client(client_stream: Arc<Mutex<TcpStream>>) {
         }
     }
 
-    let server_connect = TcpStream::connect(&addr_proxy);
-    if let Err(e) = server_connect {
-        eprintln!("Erro ao conectar ao servidor proxy: {}", e);
-        return;
+    if let Ok(server_stream) = TcpStream::connect(&addr_proxy) {
+        let (client_read, client_write) = (Arc::clone(&client_stream), Arc::clone(&client_stream));
+        let (server_read, server_write) = (Arc::new(Mutex::new(server_stream.try_clone().unwrap())), Arc::new(Mutex::new(server_stream)));
+
+        thread::spawn(move || {
+            transfer_data(client_read, server_write);
+        });
+
+        thread::spawn(move || {
+            transfer_data(server_read, client_write);
+        });
+    } else {
+        eprintln!("Erro ao conectar ao servidor proxy: Não foi possível estabelecer uma conexão com o proxy");
     }
-
-    let server_stream = server_connect.unwrap();
-
-    let (client_read, client_write) = (Arc::clone(&client_stream), Arc::clone(&client_stream));
-    let (server_read, server_write) = (Arc::new(Mutex::new(server_stream.try_clone().unwrap())), Arc::new(Mutex::new(server_stream)));
-
-    // Transferência de dados entre cliente e servidor usando Arc e Mutex
-    thread::spawn(move || {
-        transfer_data(client_read, server_write);
-    });
-
-    thread::spawn(move || {
-        transfer_data(server_read, client_write);
-    });
 }
 
 fn transfer_data(read_stream: Arc<Mutex<TcpStream>>, write_stream: Arc<Mutex<TcpStream>>) {
-    let mut buffer = [0; 2048];
+    let mut buffer = vec![0; 2048];
     loop {
         let bytes_read = {
-            let mut read = read_stream.lock().unwrap();
-            read.read(&mut buffer)
+            let mut read = match read_stream.lock() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            match read.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_) => return,
+            }
         };
 
-        match bytes_read {
-            Ok(0) => break,
-            Ok(n) => {
-                let write_result = {
-                    let mut write = write_stream.lock().unwrap();
-                    write.write_all(&buffer[..n])
-                };
+        if bytes_read == 0 {
+            break;
+        }
 
-                if write_result.is_err() {
-                    break;
-                }
+        if let Ok(mut write) = write_stream.lock() {
+            if write.write_all(&buffer[..bytes_read]).is_err() {
+                break;
             }
-            Err(_) => break,
         }
     }
 
@@ -129,11 +126,10 @@ fn transfer_data(read_stream: Arc<Mutex<TcpStream>>, write_stream: Arc<Mutex<Tcp
 }
 
 fn peek_stream(read_stream: &TcpStream) -> Result<String, Error> {
-    let mut peek_buffer = vec![0; 1024];
+    let mut peek_buffer = vec![0; 512]; // reduzindo o tamanho do buffer para melhorar a velocidade de resposta
     let bytes_peeked = read_stream.peek(&mut peek_buffer)?;
     let data = &peek_buffer[..bytes_peeked];
-    let data_str = String::from_utf8_lossy(data);
-    Ok(data_str.to_string())
+    Ok(String::from_utf8_lossy(data).to_string())
 }
 
 fn get_port() -> u16 {
@@ -141,10 +137,8 @@ fn get_port() -> u16 {
     let mut port = 80;
 
     for i in 1..args.len() {
-        if args[i] == "--port" {
-            if i + 1 < args.len() {
-                port = args[i + 1].parse().unwrap_or(80);
-            }
+        if args[i] == "--port" && i + 1 < args.len() {
+            port = args[i + 1].parse().unwrap_or(80);
         }
     }
 
@@ -156,10 +150,8 @@ fn get_status() -> String {
     let mut status = String::from("@RustyManager");
 
     for i in 1..args.len() {
-        if args[i] == "--status" {
-            if i + 1 < args.len() {
-                status = args[i + 1].clone();
-            }
+        if args[i] == "--status" && i + 1 < args.len() {
+            status = args[i + 1].clone();
         }
     }
 
