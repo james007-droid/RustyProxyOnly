@@ -4,6 +4,25 @@ O RustyProxy é um script simples e otimizado configurável para servidores de p
 - **Websocket**
 - **Security**
 - **ProxySocks**
+- 
+## Mudanças principais:
+Reconexão:
+
+Tentativas adicionais para conexão com o servidor (CONNECTION_RETRIES).
+Intervalo entre tentativas (thread::sleep).
+Estabilidade:
+
+Melhoria no manuseio de erros ao bloquear Mutex.
+Uso de canais mpsc para comunicação robusta em determine_proxy_address.
+Velocidade:
+
+Aumento do tamanho do buffer.
+Ajuste de timeouts para reduzir atrasos em conexões lentas.
+Benefícios:
+Melhor desempenho em redes instáveis.
+Conexões mais confiáveis com o servidor.
+Resposta mais ágil para fluxos de dados maiores.
+
 
 
 ## Comando de Instalação
