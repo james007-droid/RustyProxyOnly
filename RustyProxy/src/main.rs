@@ -6,8 +6,10 @@ use std::time::Duration;
 use std::{env, thread};
 use threadpool::ThreadPool;
 
-const MAX_THREADS: usize = 16; // Aumentando o número de threads para melhor paralelismo.
-const BUFFER_SIZE: usize = 4096; // Buffer maior para transferências mais rápidas.
+const MAX_THREADS: usize = 16; // Melhor paralelismo.
+const BUFFER_SIZE: usize = 8192; // Buffer maior para maior eficiência.
+const CONNECTION_RETRIES: u8 = 3; // Número máximo de tentativas de conexão.
+const TIMEOUT_DURATION: Duration = Duration::from_secs(3); // Timeout para conexões.
 
 fn main() {
     let port = get_port();
@@ -36,19 +38,38 @@ fn handle_client(client_stream: Arc<Mutex<TcpStream>>) {
     configure_timeouts(&client_stream);
 
     let proxy_address = determine_proxy_address(&client_stream);
-    match TcpStream::connect(&proxy_address) {
-        Ok(server_stream) => {
-            let server_read = Arc::new(Mutex::new(server_stream.try_clone().unwrap()));
-            let server_write = Arc::new(Mutex::new(server_stream));
 
-            let client_read = Arc::clone(&client_stream);
-            let client_write = Arc::clone(&client_stream);
-
-            thread::spawn(move || transfer_data(client_read, server_write));
-            thread::spawn(move || transfer_data(server_read, client_write));
+    for attempt in 1..=CONNECTION_RETRIES {
+        match TcpStream::connect(&proxy_address) {
+            Ok(server_stream) => {
+                establish_data_transfer(client_stream, server_stream);
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Erro ao conectar ao servidor proxy ({}), tentativa {}/{}: {}",
+                    proxy_address, attempt, CONNECTION_RETRIES, e
+                );
+                thread::sleep(Duration::from_millis(100)); // Pequeno intervalo entre tentativas.
+            }
         }
-        Err(e) => eprintln!("Erro ao conectar ao servidor proxy ({}): {}", proxy_address, e),
     }
+
+    eprintln!(
+        "Não foi possível conectar ao servidor proxy após {} tentativas.",
+        CONNECTION_RETRIES
+    );
+}
+
+fn establish_data_transfer(client_stream: Arc<Mutex<TcpStream>>, server_stream: TcpStream) {
+    let server_read = Arc::new(Mutex::new(server_stream.try_clone().unwrap()));
+    let server_write = Arc::new(Mutex::new(server_stream));
+
+    let client_read = Arc::clone(&client_stream);
+    let client_write = Arc::clone(&client_stream);
+
+    thread::spawn(move || transfer_data(client_read, server_write));
+    thread::spawn(move || transfer_data(server_read, client_write));
 }
 
 fn determine_proxy_address(client_stream: &Arc<Mutex<TcpStream>>) -> String {
@@ -66,7 +87,7 @@ fn determine_proxy_address(client_stream: &Arc<Mutex<TcpStream>>) -> String {
         tx.send(result).ok();
     });
 
-    if let Ok(Ok(data)) = rx.recv_timeout(Duration::from_secs(1)) {
+    if let Ok(Ok(data)) = rx.recv_timeout(TIMEOUT_DURATION) {
         if data.contains("SSH") {
             "0.0.0.0:22".to_string()
         } else {
@@ -105,9 +126,8 @@ fn transfer_data(read_stream: Arc<Mutex<TcpStream>>, write_stream: Arc<Mutex<Tcp
 
 fn configure_timeouts(client_stream: &Arc<Mutex<TcpStream>>) {
     if let Ok(mut stream) = client_stream.lock() {
-        let timeout = Some(Duration::from_secs(2));
-        stream.set_read_timeout(timeout).ok();
-        stream.set_write_timeout(timeout).ok();
+        stream.set_read_timeout(Some(TIMEOUT_DURATION)).ok();
+        stream.set_write_timeout(Some(TIMEOUT_DURATION)).ok();
     }
 }
 
