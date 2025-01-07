@@ -5,12 +5,16 @@ PORTS_FILE="/opt/rustyproxy/ports"
 # Função para verificar se uma porta está em uso
 is_port_in_use() {
     local port=$1
-    if lsof -i :$port > /dev/null 2>&1; then
-        return 0
+    
+    if netstat -tuln 2>/dev/null | grep -q ":[0-9]*$port\b"; then
+        return 0  
+    elif ss -tuln 2>/dev/null | grep -q ":[0-9]*$port\b"; then
+        return 0  
     else
-        return 1
+        return 1 
     fi
 }
+
 
 # Função para abrir uma porta de proxy
 add_proxy_port() {
@@ -33,7 +37,7 @@ LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitMEMLOCK=infinity
 LimitSTACK=infinity
-LimitCORE=infinity
+LimitCORE=0
 LimitAS=infinity
 LimitRSS=infinity
 LimitCPU=infinity
