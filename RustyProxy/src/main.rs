@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use std::{env, thread};
 use threadpool::ThreadPool;
 
-const MAX_THREADS: usize = 64; // Maior paralelismo.
-const BUFFER_SIZE: usize = 16384; // Buffer otimizado para maior throughput.
-const CONNECTION_RETRIES: u8 = 5;
-const BASE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_THREADS: usize = 32; // Aumentando paralelismo para melhor desempenho.
+const BUFFER_SIZE: usize = 8192; // Buffer para transferências rápidas.
+const CONNECTION_RETRIES: u8 = 5; // Maior número de tentativas para maior robustez.
+const BASE_TIMEOUT: Duration = Duration::from_secs(2); // Timeout inicial.
 
 fn main() {
     let port = get_port();
@@ -51,7 +51,7 @@ fn handle_client(client_stream: Arc<Mutex<TcpStream>>) {
                     "Erro ao conectar ao servidor proxy ({}), tentativa {}/{}: {}",
                     proxy_address, attempt, CONNECTION_RETRIES, e
                 );
-                thread::sleep(Duration::from_millis(100)); // Ajustado para impacto mínimo.
+                thread::sleep(Duration::from_millis(50)); // Reduzido para menor impacto no ping.
             }
         }
     }
@@ -129,9 +129,10 @@ fn transfer_data_with_ping(
             }
         }
 
+        // Exibir estatísticas de ping e throughput a cada 1 segundo.
         if start_time.elapsed() >= Duration::from_secs(1) {
             println!(
-                "Ping: {:?}, Dados transferidos: {} bytes",
+                "Tempo de resposta (ping): {:?}, Dados transferidos: {} bytes",
                 start_time.elapsed(),
                 total_bytes
             );
